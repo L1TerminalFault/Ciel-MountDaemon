@@ -1,0 +1,25 @@
+[Unit]
+Description=Device mount daemon (USB/block/MTP auto-mount)
+Documentation=file:///usr/local/share/doc/ciel-mountd/README.md
+After=local-fs.target systemd-udevd.service
+Requires=systemd-udevd.service
+# If udisks2 is installed, this daemon duplicates (and will race) its
+# auto-mount behavior. Uncomment once you're ready to fully switch over:
+# Conflicts=udisks2.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/ciel-mountd --foreground
+Restart=on-failure
+RestartSec=2
+
+# Needs CAP_SYS_ADMIN for mount(2)/umount2(2); we run as root but drop
+# every other root privilege we don't need.
+CapabilityBoundingSet=CAP_SYS_ADMIN
+AmbientCapabilities=CAP_SYS_ADMIN
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/media /run
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,42 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://freedesktop.org">
+<node>
+  <interface name="org.freedesktop.DBus.Introspectable">
+    <method name="Introspect">
+      <arg name="xml_data" type="s" direction="out"/>
+    </method>
+  </interface>
+  <interface name="org.ciel.Mount">
+    <!-- Properties -->
+    <property name="MountedDevices" type="a(sssb)" access="read"/>
+
+    <!-- Methods -->
+    <method name="ListMounted">
+      <arg name="devices" type="a(sssb)" direction="out"/>
+    </method>
+    <method name="EjectDevice">
+      <arg name="devicePath" type="s" direction="in"/>
+      <arg name="success" type="b" direction="out"/>
+      <arg name="errorMessage" type="s" direction="out"/>
+    </method>
+    <method name="MountDevice">
+      <arg name="devicePath" type="s" direction="in"/>
+      <arg name="success" type="b" direction="out"/>
+    </method>
+
+    <!-- Signals -->
+    <signal name="DeviceMounted">
+      <arg name="devicePath" type="s"/>
+      <arg name="label" type="s"/>
+      <arg name="mountPoint" type="s"/>
+    </signal>
+    <signal name="DeviceUnmounted">
+      <arg name="devicePath" type="s"/>
+    </signal>
+    <signal name="EjectFailed">
+      <arg name="devicePath" type="s"/>
+      <arg name="reason" type="s"/>
+    </signal>
+  </interface>
+</node>
+
