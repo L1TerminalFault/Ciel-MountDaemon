@@ -1,6 +1,16 @@
 # Ciel-MountD
 
-### Put the file 'interface/org.ciel.Mount.conf' in '/usr/share/dbus-1/system.d/' (or wherever dbus conf files are stored) so that `dbus` registers it
+#### Put the file 'interface/org.ciel.Mount.conf' in '/usr/share/dbus-1/system.d/' (or wherever dbus conf files are stored) so that `dbus` registers it
+
+- Usage:
+
+##### for foreground logs
+
+`ciel-mountd` -f
+
+##### for daemon mode
+
+`ciel-mountd`
 
 <!-- A minimal, dependency-light daemon that watches udev for removable USB/block
 devices and auto-mounts them — a starting point for something that can
