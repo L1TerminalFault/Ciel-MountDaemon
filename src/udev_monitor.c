@@ -1,81 +1,84 @@
-/*
- * udev_monitor.c - see udev_monitor.h
- *
- * Two udev concepts worth knowing before reading this file:
- *
- *   - "enumerate" = a synchronous snapshot query ("what block devices
- *     exist right now?"). We use this once at startup.
- *   - "monitor"   = a netlink socket that streams add/remove/change
- *     events as they happen. We use this for the daemon's main loop.
- *
- * Both hand us `struct udev_device *` objects; fill_device_info() below
- * is the one place that reads properties off of them and turns them
- * into our own plain device_info_t, so the rest of the codebase never
- * needs to know libudev exists.
- */
-
 #include "udev_monitor.h"
 #include "log.h"
 #include "util.h"
 
 #include <libudev.h>
-#include <string.h>
+#include <fcntl.h>
+#include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 struct udev_ctx {
     struct udev *udev;
     struct udev_monitor *mon;
 };
 
-/* Small helper: copy a udev property into a fixed-size buffer, tolerating
- * the property being absent (udev_device_get_property_value returns NULL
- * for unset properties - e.g. a freshly-formatted disk with no label). */
 static void copy_prop(struct udev_device *dev, const char *key,
-                       char *out, size_t out_len)
+                      char *out, size_t out_len)
 {
     const char *val = udev_device_get_property_value(dev, key);
-    safe_copy(out, out_len, val); /* val may be NULL: property unset */
+    safe_copy(out, out_len, val ? val : "");
 }
 
-/* Is this block device on removable media? Two independent signals:
- *   1. ID_BUS=usb (or mmc, for SD cards) - set by udev's usb/mmc rules.
- *   2. The "removable" sysfs attribute of the *disk* device (not the
- *      partition) - some USB enclosures/bus types don't set ID_BUS
- *      reliably, so this is a useful fallback.
+/*
+ * Reliably detects if a block device is removable:
+ * 1. Matches USB, MMC, SD, or CD-ROM bus/drive properties.
+ * 2. Checks the sysfs "removable" attribute of the disk itself.
+ * 3. If dev is a partition, checks the parent disk's properties.
  */
 static bool detect_removable(struct udev_device *dev, const char *id_bus)
 {
-    if (strcmp(id_bus, "usb") == 0 || strcmp(id_bus, "mmc") == 0)
+    if (id_bus && (strcmp(id_bus, "usb") == 0 || strcmp(id_bus, "mmc") == 0))
         return true;
 
-    /* Walk up to the parent "disk" device (a partition's parent is the
-     * whole-disk device) and check its removable attribute. For a device
-     * that's already the whole disk, this just returns dev's own parent
-     * chain in the block subsystem, which still works. */
+    const char *cdrom = udev_device_get_property_value(dev, "ID_CDROM");
+    if (cdrom && strcmp(cdrom, "1") == 0)
+        return true;
+
+    const char *flash = udev_device_get_property_value(dev, "ID_DRIVE_FLASH_SD");
+    if (flash && strcmp(flash, "1") == 0)
+        return true;
+
+    /* Check device's own sysfs "removable" attribute (valid if dev is a disk) */
+    const char *removable = udev_device_get_sysattr_value(dev, "removable");
+    if (removable && strcmp(removable, "1") == 0)
+        return true;
+
+    /* If dev is a partition, check the parent disk device */
     struct udev_device *disk =
         udev_device_get_parent_with_subsystem_devtype(dev, "block", "disk");
-    if (!disk)
-        return false;
+    if (disk) {
+        removable = udev_device_get_sysattr_value(disk, "removable");
+        if (removable && strcmp(removable, "1") == 0)
+            return true;
 
-    const char *removable = udev_device_get_sysattr_value(disk, "removable");
-    return removable && strcmp(removable, "1") == 0;
+        const char *parent_bus = udev_device_get_property_value(disk, "ID_BUS");
+        if (parent_bus && (strcmp(parent_bus, "usb") == 0 || strcmp(parent_bus, "mmc") == 0))
+            return true;
+
+        cdrom = udev_device_get_property_value(disk, "ID_CDROM");
+        if (cdrom && strcmp(cdrom, "1") == 0)
+            return true;
+    }
+
+    return false;
 }
 
-/* Fills a device_info_t for a subsystem=="block" udev_device. */
 static void fill_block_info(struct udev_device *dev, device_info_t *info)
 {
     const char *devnode = udev_device_get_devnode(dev);
     const char *syspath = udev_device_get_syspath(dev);
     const char *sysname = udev_device_get_sysname(dev);
-    const char *devtype = udev_device_get_devtype(dev); /* "disk"|"partition" */
+    const char *devtype = udev_device_get_devtype(dev);
 
-    safe_copy(info->devnode, sizeof(info->devnode), devnode);
-    safe_copy(info->syspath, sizeof(info->syspath), syspath);
-    safe_copy(info->sysname, sizeof(info->sysname), sysname);
+    safe_copy(info->devnode, sizeof(info->devnode), devnode ? devnode : "");
+    safe_copy(info->syspath, sizeof(info->syspath), syspath ? syspath : "");
+    safe_copy(info->sysname, sizeof(info->sysname), sysname ? sysname : "");
 
     info->is_partition = devtype && strcmp(devtype, "partition") == 0;
     info->class = info->is_partition ? DEV_CLASS_BLOCK_PARTITION
-                                      : DEV_CLASS_BLOCK_DISK;
+                                     : DEV_CLASS_BLOCK_DISK;
 
     copy_prop(dev, "ID_BUS",       info->id_bus,       sizeof(info->id_bus));
     copy_prop(dev, "ID_FS_TYPE",   info->id_fs_type,   sizeof(info->id_fs_type));
@@ -85,36 +88,45 @@ static void fill_block_info(struct udev_device *dev, device_info_t *info)
     copy_prop(dev, "ID_MODEL",     info->id_model,     sizeof(info->id_model));
     copy_prop(dev, "ID_SERIAL",    info->id_serial,    sizeof(info->id_serial));
 
+    /*
+     * If properties were not set on the partition itself, inherit
+     * vendor, model, and bus from the parent disk.
+     */
+    if (info->is_partition) {
+        struct udev_device *disk =
+            udev_device_get_parent_with_subsystem_devtype(dev, "block", "disk");
+        if (disk) {
+            if (info->id_vendor[0] == '\0')
+                copy_prop(disk, "ID_VENDOR", info->id_vendor, sizeof(info->id_vendor));
+            if (info->id_model[0] == '\0')
+                copy_prop(disk, "ID_MODEL", info->id_model, sizeof(info->id_model));
+            if (info->id_bus[0] == '\0')
+                copy_prop(disk, "ID_BUS", info->id_bus, sizeof(info->id_bus));
+        }
+    }
+
     info->is_removable = detect_removable(dev, info->id_bus);
 }
 
-/* Fills a device_info_t for a subsystem=="usb", devtype=="usb_device"
- * udev_device, used only for MTP detection.
- *
- * MTP heuristic: distros that ship libmtp install a udev rule
- * (commonly 69-libmtp.rules) that runs `mtp-probe` against every new USB
- * device and, if it identifies as an MTP responder, sets the
- * ID_MTP_DEVICE=1 and ID_MEDIA_PLAYER properties on it. We just read
- * that property rather than re-implementing PTP/MTP protocol probing
- * ourselves. If ID_MTP_DEVICE never shows up on your system, install
- * `mtp-tools`/`libmtp-dev` (Debian/Ubuntu) or check that
- * 69-libmtp.rules is present in /usr/lib/udev/rules.d/. */
 static void fill_usb_info(struct udev_device *dev, device_info_t *info)
 {
     const char *is_mtp = udev_device_get_property_value(dev, "ID_MTP_DEVICE");
-    if (!is_mtp || strcmp(is_mtp, "1") != 0) {
-        info->class = DEV_CLASS_UNKNOWN; /* an ordinary USB device: ignore */
+    const char *is_media = udev_device_get_property_value(dev, "ID_MEDIA_PLAYER");
+
+    if ((!is_mtp || strcmp(is_mtp, "1") != 0) &&
+        (!is_media || strcmp(is_media, "1") != 0)) {
+        info->class = DEV_CLASS_UNKNOWN;
         return;
     }
 
     info->class = DEV_CLASS_MTP;
 
-    const char *devnode = udev_device_get_devnode(dev); /* /dev/bus/usb/.../.. */
+    const char *devnode = udev_device_get_devnode(dev);
     const char *syspath = udev_device_get_syspath(dev);
     const char *sysname = udev_device_get_sysname(dev);
-    safe_copy(info->devnode, sizeof(info->devnode), devnode);
-    safe_copy(info->syspath, sizeof(info->syspath), syspath);
-    safe_copy(info->sysname, sizeof(info->sysname), sysname);
+    safe_copy(info->devnode, sizeof(info->devnode), devnode ? devnode : "");
+    safe_copy(info->syspath, sizeof(info->syspath), syspath ? syspath : "");
+    safe_copy(info->sysname, sizeof(info->sysname), sysname ? sysname : "");
 
     copy_prop(dev, "ID_VENDOR", info->id_vendor, sizeof(info->id_vendor));
     copy_prop(dev, "ID_MODEL",  info->id_model,  sizeof(info->id_model));
@@ -122,22 +134,14 @@ static void fill_usb_info(struct udev_device *dev, device_info_t *info)
     safe_copy(info->id_bus, sizeof(info->id_bus), "usb");
     info->is_removable = true;
 
-    /* These sysfs attributes live directly on a usb_device node (unlike
-     * the block-device case, no parent walk needed) and let mtp_fs.c
-     * open the exact same physical device via libmtp's raw-device list,
-     * which only identifies devices by bus/address, not by devnode. */
     const char *busnum = udev_device_get_sysattr_value(dev, "busnum");
     const char *devnum = udev_device_get_sysattr_value(dev, "devnum");
     info->usb_busnum = busnum ? atoi(busnum) : -1;
     info->usb_devnum = devnum ? atoi(devnum) : -1;
 }
 
-/* Central dispatch: turns a raw udev_device + action string into our
- * device_info_t, or returns false if this device isn't one we handle
- * (e.g. a plain USB device that isn't MTP, or a block device with no
- * devnode such as a CD-ROM drive with no disc inserted). */
 static bool fill_device_info(struct udev_device *dev, const char *action_str,
-                              device_info_t *info)
+                             device_info_t *info)
 {
     memset(info, 0, sizeof(*info));
 
@@ -158,14 +162,14 @@ static bool fill_device_info(struct udev_device *dev, const char *action_str,
 
     if (strcmp(subsystem, "block") == 0) {
         if (!udev_device_get_devnode(dev))
-            return false; /* e.g. empty optical drive slot */
+            return false;
         fill_block_info(dev, info);
         return true;
     }
 
     if (strcmp(subsystem, "usb") == 0) {
         fill_usb_info(dev, info);
-        return info->class == DEV_CLASS_MTP; /* discard non-MTP usb noise */
+        return info->class == DEV_CLASS_MTP;
     }
 
     return false;
@@ -184,9 +188,6 @@ udev_ctx_t *udev_monitor_create(void)
         return NULL;
     }
 
-    /* "udev" (not "kernel") gives us events *after* udev has finished
-     * running its rules and populated ID_FS_TYPE/ID_MTP_DEVICE/etc, which
-     * is exactly the enriched data fill_device_info() relies on. */
     ctx->mon = udev_monitor_new_from_netlink(ctx->udev, "udev");
     if (!ctx->mon) {
         log_error("udev_monitor_new_from_netlink() failed");
@@ -206,6 +207,17 @@ udev_ctx_t *udev_monitor_create(void)
         return NULL;
     }
 
+    /*
+     * Make the netlink socket strictly non-blocking.
+     * Prevents udev_monitor_receive_device() from freezing inside recvmsg().
+     */
+    int fd = udev_monitor_get_fd(ctx->mon);
+    if (fd >= 0) {
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags >= 0)
+            fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+
     return ctx;
 }
 
@@ -222,14 +234,16 @@ void udev_monitor_destroy(udev_ctx_t *ctx)
 
 int udev_monitor_fd(const udev_ctx_t *ctx)
 {
-    return udev_monitor_get_fd(ctx->mon); /* libudev's function, different signature */
+    if (!ctx || !ctx->mon)
+        return -1;
+    return udev_monitor_get_fd(ctx->mon);
 }
 
 void udev_monitor_process(udev_ctx_t *ctx, device_event_cb cb, void *user_data)
 {
-    /* The netlink socket is non-blocking-ish in the sense that once
-     * drained, receive_device() returns NULL - so loop until it does,
-     * in case several events arrived in a single epoll wakeup. */
+    if (!ctx || !ctx->mon || !cb)
+        return;
+
     struct udev_device *dev;
     while ((dev = udev_monitor_receive_device(ctx->mon)) != NULL) {
         const char *action = udev_device_get_action(dev);
@@ -242,15 +256,18 @@ void udev_monitor_process(udev_ctx_t *ctx, device_event_cb cb, void *user_data)
     }
 }
 
-void udev_enumerate_existing(udev_ctx_t *ctx, device_event_cb cb, void *user_data)
+static void enumerate_subsystem(struct udev *udev, const char *subsystem,
+                                const char *devtype, device_event_cb cb,
+                                void *user_data)
 {
-    struct udev_enumerate *en = udev_enumerate_new(ctx->udev);
-    if (!en) {
-        log_error("udev_enumerate_new() failed");
+    struct udev_enumerate *en = udev_enumerate_new(udev);
+    if (!en)
         return;
-    }
 
-    udev_enumerate_add_match_subsystem(en, "block");
+    udev_enumerate_add_match_subsystem(en, subsystem);
+    if (devtype)
+        udev_enumerate_add_match_property(en, "DEVTYPE", devtype);
+
     udev_enumerate_scan_devices(en);
 
     struct udev_list_entry *entry;
@@ -258,13 +275,11 @@ void udev_enumerate_existing(udev_ctx_t *ctx, device_event_cb cb, void *user_dat
 
     udev_list_entry_foreach(entry, devices) {
         const char *syspath = udev_list_entry_get_name(entry);
-        struct udev_device *dev = udev_device_new_from_syspath(ctx->udev, syspath);
+        struct udev_device *dev = udev_device_new_from_syspath(udev, syspath);
         if (!dev)
             continue;
 
         device_info_t info;
-        /* Startup enumeration is treated exactly like a fresh "add" event
-         * so mount_manager doesn't need a separate code path for it. */
         if (fill_device_info(dev, "add", &info))
             cb(&info, user_data);
 
@@ -272,4 +287,16 @@ void udev_enumerate_existing(udev_ctx_t *ctx, device_event_cb cb, void *user_dat
     }
 
     udev_enumerate_unref(en);
+}
+
+void udev_enumerate_existing(udev_ctx_t *ctx, device_event_cb cb, void *user_data)
+{
+    if (!ctx || !ctx->udev || !cb)
+        return;
+
+    /* 1. Enumerate Block Devices */
+    enumerate_subsystem(ctx->udev, "block", NULL, cb, user_data);
+
+    /* 2. Enumerate Connected MTP Devices */
+    enumerate_subsystem(ctx->udev, "usb", "usb_device", cb, user_data);
 }
