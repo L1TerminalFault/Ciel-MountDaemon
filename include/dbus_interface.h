@@ -6,7 +6,6 @@
 // Functions for main.c to handle initialization and the event loop
 bool dbus_interface_init(void);
 void dbus_interface_tick(void);
-int dbus_interface_get_fd(void);
 void dbus_interface_shutdown(void);
 
 // Functions for mount_manager.c to notify desktop clients
