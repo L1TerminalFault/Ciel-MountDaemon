@@ -4,13 +4,9 @@
 
 - Usage:
 
-##### for foreground logs
+##### for foreground logs `ciel-mountd -f`
 
-`ciel-mountd` -f
-
-##### for daemon mode
-
-`ciel-mountd`
+##### for daemon mode `ciel-mountd`
 
 <!-- A minimal, dependency-light daemon that watches udev for removable USB/block
 devices and auto-mounts them — a starting point for something that can
