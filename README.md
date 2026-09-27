@@ -1,6 +1,6 @@
 # Ciel-MountD
 
-#### Put the file `interface/org.ciel.Mount.conf` in `/usr/share/dbus-1/system.d/` **or wherever dbus conf files are stored** so that `dbus` registers it
+#### Put the file `interface/org.ciel.Mount.conf` in `/usr/share/dbus-1/system.d/` _(or wherever dbus conf files are stored)_ so that `dbus` registers it
 
 - Usage:
 
