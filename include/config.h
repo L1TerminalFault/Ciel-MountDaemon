@@ -17,16 +17,6 @@
  * See README.md, section "Known limitations", for how to extend this. */
 #define MOUNT_BASE_DIR "/media"
 
-/* Every filesystem we mount gets ownership mapped to this uid/gid via
- * mount options (for fs types that support uid=/gid=, e.g. vfat/exfat/ntfs3).
- * 1000 is the conventional first non-root user on most distros.
- *
- * TODO: this is a placeholder. A "real" replacement for udisks2 should
- * determine the uid of the user logged in at the active seat (via
- * sd-login.h / logind) instead of hardcoding it. */
-// #define MOUNT_UID 1000
-// #define MOUNT_GID 1000
-
 /* Syslog identity, shown in `journalctl -t ciel-mountd` */
 #define LOG_IDENT "ciel-mountd"
 
