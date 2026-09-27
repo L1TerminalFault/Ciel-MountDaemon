@@ -25,6 +25,6 @@
 #define EPOLL_TIMEOUT_MS 2000
 
 /* Max number of epoll events processed per wakeup */
-#define MAX_EPOLL_EVENTS 8
+#define MAX_EPOLL_EVENTS 16
 
 #endif /* CONFIG_H */
