@@ -39,6 +39,8 @@ typedef struct mounted_entry {
 static mounted_entry_t *g_mounted = NULL;
 
 #define MAX_NAME_LEN 64
+#define MTP_PREFIX "mtp-"
+#define MTP_NAME_LEN (MAX_NAME_LEN + sizeof(MTP_PREFIX) - 1)
 
 void mount_manager_init(void)
 {
@@ -153,12 +155,16 @@ static void build_options(const device_info_t *info, char *out, size_t out_len)
 static void pick_mtp_name(const device_info_t *info, char out[MAX_NAME_LEN])
 {
     char raw[MAX_PROP_LEN];
-    if (info->id_model[0] != '\0')
+
+    if (info->id_model[0] != '\0') {
         safe_copy(raw, sizeof(raw), info->id_model);
-    else if (info->id_vendor[0] != '\0')
-        snprintf(raw, sizeof(raw), "%s-device", info->id_vendor);
-    else
+    } else if (info->id_vendor[0] != '\0') {
+        snprintf(raw, sizeof(raw), "%.*s-device",
+                 (int)(sizeof(raw) - sizeof("-device")),
+                 info->id_vendor);
+    } else {
         safe_copy(raw, sizeof(raw), "mtp-device");
+    }
 
     sanitize(raw, out, MAX_NAME_LEN);
 }
@@ -180,9 +186,11 @@ static int handle_add_mtp(const device_info_t *info)
     }
 
     char base_name[MAX_NAME_LEN];
-    char prefixed_name[MAX_NAME_LEN];
+    char prefixed_name[MTP_NAME_LEN];
+
     pick_mtp_name(info, base_name);
-    snprintf(prefixed_name, sizeof(prefixed_name), "mtp-%s", base_name);
+    snprintf(prefixed_name, sizeof(prefixed_name), "%s%s",
+            MTP_PREFIX, base_name);
 
     char mountpoint[MAX_PROP_LEN];
     if (build_and_create_mount_point(prefixed_name, mountpoint, sizeof(mountpoint)) != 0)
