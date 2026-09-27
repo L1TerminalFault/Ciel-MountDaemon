@@ -7,17 +7,29 @@
 
 #include <stdio.h>
 #include <stddef.h>
+#include <string.h>
 
 /* snprintf-based "safe strcpy": always NUL-terminates dst and silently
  * truncates rather than ever overflowing. Used everywhere we copy a
  * udev-provided string (whose length we don't control) into one of our
  * fixed-size buffers, instead of strncpy - which doesn't guarantee NUL
  * termination and trips GCC's -Wstringop-truncation for no benefit. */
-static inline void safe_copy(char *dst, size_t dst_size, const char *src)
+static inline void safe_copy(char* dst, size_t dst_size, const char* src)
 {
-    if (dst_size == 0)
+    size_t len;
+
+    if (!dst || dst_size == 0)
         return;
-    snprintf(dst, dst_size, "%s", src ? src : "");
+
+    if (!src)
+        src = "";
+
+    len = strlen(src);
+    if (len >= dst_size)
+        len = dst_size - 1;
+
+    memcpy(dst, src, len);
+    dst[len] = '\0';
 }
 
 #endif /* UTIL_H */
