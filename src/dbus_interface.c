@@ -12,12 +12,8 @@
 #define OBJECT_PATH    "/org/ciel/Mount"
 #define INTERFACE_NAME "org.ciel.Mount"
 
-/* Install the XML with your package, e.g. under
- * /usr/share/dbus-1/interfaces/org.ciel.Mount.xml
- * Relative paths break after daemonize() does chdir("/"). */
 #define XML_FILE_PATH  "/usr/share/dbus-1/interfaces/org.ciel.Mount.xml"
 
-/* Minimal but complete fallback so Introspect never returns empty. */
 #define FALLBACK_XML_DATA \
     "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\"\n" \
     " \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">\n" \
